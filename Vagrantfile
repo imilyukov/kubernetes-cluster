@@ -45,6 +45,24 @@ $configureBox = <<-SCRIPT
     # run docker commands as vagrant user (sudo not required)
     sudo usermod -aG docker vagrant
 
+    # Setup daemon.
+    sudo cat <<EOF > /etc/docker/daemon.json
+    {
+      "exec-opts": ["native.cgroupdriver=systemd"],
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "100m"
+      },
+      "storage-driver": "overlay2"
+    }
+EOF
+    
+    sudo mkdir -p /etc/systemd/system/docker.service.d
+    
+    # Restart docker.
+    sudo systemctl daemon-reload
+    sudo systemctl restart docker
+
     # install kubeadm
     sudo apt-get install -y apt-transport-https curl
     curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
@@ -58,13 +76,12 @@ EOF
     # kubelet requires swap off
     sudo swapoff -a
 
-    # keep swap off after reboot
-    sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
-
     # ip of this box
     IP_ADDR=`ifconfig eth1 | grep -i mask | awk '{print $2}'| cut -f2 -d:`
     # set node-ip
     sudo echo "KUBELET_EXTRA_ARGS=--node-ip=$IP_ADDR" > /etc/default/kubelet
+
+    sudo systemctl daemon-reload
     sudo systemctl restart kubelet
 SCRIPT
 
@@ -107,37 +124,34 @@ $configureNode = <<-SCRIPT
 SCRIPT
 
 Vagrant.configure("2") do |config|
-
     servers.each do |opts|
         config.vm.define opts[:name] do |config|
-
             config.vm.box = opts[:box]
             config.vm.box_version = opts[:box_version]
             config.vm.hostname = opts[:name]
             config.vm.network :private_network, ip: opts[:eth1]
 
             config.vm.provider "virtualbox" do |v|
-
                 v.name = opts[:name]
-            	 v.customize ["modifyvm", :id, "--groups", "/Ballerina Development"]
+            	v.customize ["modifyvm", :id, "--groups", "/Ballerina Development"]
                 v.customize ["modifyvm", :id, "--memory", opts[:mem]]
                 v.customize ["modifyvm", :id, "--cpus", opts[:cpu]]
-
             end
 
             # we cannot use this because we can't install the docker version we want - https://github.com/hashicorp/vagrant/issues/4871
             #config.vm.provision "docker"
 
             config.vm.provision "shell", inline: $configureBox
+            # keep swap off after reboot
+            config.vm.provision "shell", inline: <<-'SHELL'
+                sudo sed -i "s|\(.*\?swap.*\)|#\1|g" /etc/fstab
+            SHELL
 
             if opts[:type] == "master"
                 config.vm.provision "shell", inline: $configureMaster
             else
                 config.vm.provision "shell", inline: $configureNode
             end
-
         end
-
     end
-
-end 
+end
